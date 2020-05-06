@@ -103,6 +103,10 @@ func (id *missingIdentity) IsExpired(asOf time.Time) bool {
 	return false
 }
 
+func (id *missingIdentity) IsLocal() bool {
+	return false
+}
+
 func (id *missingIdentity) EnterpriseMetadata() *structs.EnterpriseMeta {
 	return structs.DefaultEnterpriseMeta()
 }
@@ -1320,6 +1324,20 @@ func (f *aclFilter) filterCheckServiceNodes(nodes *structs.CheckServiceNodes) {
 	*nodes = csn
 }
 
+// filterDatacenterCheckServiceNodes is used to filter nodes based on ACL rules.
+func (f *aclFilter) filterDatacenterCheckServiceNodes(datacenterNodes *map[string]structs.CheckServiceNodes) {
+	dn := *datacenterNodes
+	out := make(map[string]structs.CheckServiceNodes)
+	for dc, _ := range dn {
+		nodes := dn[dc]
+		f.filterCheckServiceNodes(&nodes)
+		if len(nodes) > 0 {
+			out[dc] = nodes
+		}
+	}
+	*datacenterNodes = out
+}
+
 // filterSessions is used to filter a set of sessions based on ACLs.
 func (f *aclFilter) filterSessions(sessions *structs.Sessions) {
 	s := *sessions
@@ -1684,6 +1702,24 @@ func (f *aclFilter) filterServiceList(services *structs.ServiceList) {
 	*services = ret
 }
 
+// filterGatewayServices is used to filter gateway to service mappings based on ACL rules.
+func (f *aclFilter) filterGatewayServices(mappings *structs.GatewayServices) {
+	ret := make(structs.GatewayServices, 0, len(*mappings))
+	for _, s := range *mappings {
+		// This filter only checks ServiceRead on the linked service.
+		// ServiceRead on the gateway is checked in the GatewayServices endpoint before filtering.
+		var authzContext acl.AuthorizerContext
+		s.Service.FillAuthzContext(&authzContext)
+
+		if f.authorizer.ServiceRead(s.Service.ID, &authzContext) != acl.Allow {
+			f.logger.Debug("dropping service from result due to ACLs", "service", s.Service.String())
+			continue
+		}
+		ret = append(ret, s)
+	}
+	*mappings = ret
+}
+
 func (r *ACLResolver) filterACLWithAuthorizer(authorizer acl.Authorizer, subj interface{}) error {
 	if authorizer == nil {
 		return nil
@@ -1697,6 +1733,9 @@ func (r *ACLResolver) filterACLWithAuthorizer(authorizer acl.Authorizer, subj in
 
 	case *structs.IndexedCheckServiceNodes:
 		filt.filterCheckServiceNodes(&v.Nodes)
+
+	case *structs.DatacenterIndexedCheckServiceNodes:
+		filt.filterDatacenterCheckServiceNodes(&v.DatacenterNodes)
 
 	case *structs.IndexedCoordinates:
 		filt.filterCoordinates(&v.Coordinates)
@@ -1765,6 +1804,10 @@ func (r *ACLResolver) filterACLWithAuthorizer(authorizer acl.Authorizer, subj in
 
 	case *structs.IndexedServiceList:
 		filt.filterServiceList(&v.Services)
+
+	case *structs.GatewayServices:
+		filt.filterGatewayServices(v)
+
 	default:
 		panic(fmt.Errorf("Unhandled type passed to ACL filter: %T %#v", subj, subj))
 	}

@@ -17,7 +17,7 @@ FILTER_TESTS=${FILTER_TESTS:-}
 STOP_ON_FAIL=${STOP_ON_FAIL:-}
 
 # ENVOY_VERSIONS is the list of envoy versions to run each test against
-ENVOY_VERSIONS=${ENVOY_VERSIONS:-"1.10.0 1.11.2 1.12.2 1.13.0"}
+ENVOY_VERSIONS=${ENVOY_VERSIONS:-"1.11.2 1.12.3 1.13.1 1.14.1"}
 
 if [ ! -z "$DEBUG" ] ; then
   set -x
@@ -212,6 +212,12 @@ function initVars {
   fi
 }
 
+function global_setup {
+  if [ -f "${CASE_DIR}global-setup.sh" ] ; then
+    source "${CASE_DIR}global-setup.sh"
+  fi
+}
+
 function runTest {
   initVars
 
@@ -222,6 +228,8 @@ function runTest {
   then
     init_workdir secondary
   fi
+
+  global_setup
 
   # Wipe state
   docker-compose up wipe-volumes

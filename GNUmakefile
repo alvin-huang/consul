@@ -7,7 +7,8 @@ GOTOOLS = \
 	golang.org/x/tools/cmd/stringer \
 	github.com/gogo/protobuf/protoc-gen-gofast@$(GOGOVERSION) \
 	github.com/hashicorp/protoc-gen-go-binary \
-	github.com/vektra/mockery/cmd/mockery
+	github.com/vektra/mockery/cmd/mockery \
+	github.com/golangci/golangci-lint/cmd/golangci-lint@v1.23.6
 
 GOTAGS ?=
 GOOS?=$(shell go env GOOS)
@@ -212,7 +213,7 @@ cov: other-consul dev-build
 	rm -f coverage.{sdk,api}.part
 	go tool cover -html=coverage.out
 
-test: other-consul dev-build vet test-internal
+test: other-consul dev-build lint test-internal
 
 go-mod-tidy:
 	@echo "--> Running go mod tidy"
@@ -260,21 +261,7 @@ test-internal:
 test-race:
 	$(MAKE) GOTEST_FLAGS=-race
 
-# Run tests with config for CI so `make test` can still be local-dev friendly.
-test-ci: other-consul dev-build vet
-	@ if ! GOTEST_FLAGS="-short -timeout 8m -p 3 -parallel 4" make test-internal; then \
-	    echo "    ============"; \
-	    echo "      Retrying 1/2"; \
-	    echo "    ============"; \
-	    if ! GOTEST_FLAGS="-timeout 9m -p 1 -parallel 1" make test-internal; then \
-	       echo "    ============"; \
-	       echo "      Retrying 2/2"; \
-	       echo "    ============"; \
-	       GOTEST_FLAGS="-timeout 9m -p 1 -parallel 1" make test-internal; \
-	    fi \
-	fi
-
-test-flake: other-consul vet
+test-flake: other-consul lint
 	@$(SHELL) $(CURDIR)/build-support/scripts/test-flake.sh --pkg "$(FLAKE_PKG)" --test "$(FLAKE_TEST)" --cpus "$(FLAKE_CPUS)" --n "$(FLAKE_N)"
 
 test-docker: linux go-build-image
@@ -312,23 +299,11 @@ other-consul:
 		exit 1 ; \
 	fi
 
-
-format:
-	@echo "--> Running go fmt"
-	@go fmt ./...
-	@cd api && go fmt ./... | sed 's@^@api/@'
-	@cd sdk && go fmt ./... | sed 's@^@sdk/@'
-
-vet:
-	@echo "--> Running go vet"
-	@go vet -tags '$(GOTAGS)' ./... && \
-		(cd api && go vet -tags '$(GOTAGS)' ./...) && \
-		(cd sdk && go vet -tags '$(GOTAGS)' ./...); if [ $$? -ne 0 ]; then \
-		echo ""; \
-		echo "Vet found suspicious constructs. Please check the reported constructs"; \
-		echo "and fix them if necessary before submitting the code for review."; \
-		exit 1; \
-	fi
+lint:
+	@echo "--> Running go golangci-lint"
+	@golangci-lint run --build-tags '$(GOTAGS)' && \
+		(cd api && golangci-lint run --build-tags '$(GOTAGS)') && \
+		(cd sdk && golangci-lint run --build-tags '$(GOTAGS)')
 
 # If you've run "make ui" manually then this will get called for you. This is
 # also run as part of the release build script when it verifies that there are no
@@ -381,14 +356,14 @@ ui-docker: ui-build-image
 test-envoy-integ: $(ENVOY_INTEG_DEPS)
 	@$(SHELL) $(CURDIR)/test/integration/connect/envoy/run-tests.sh
 
-test-vault-ca-provider:
+test-connect-ca-providers:
 ifeq ("$(CIRCLECI)","true")
 # Run in CI
-	gotestsum --format=short-verbose --junitfile "$(TEST_RESULTS_DIR)/gotestsum-report.xml" -- $(CURDIR)/agent/connect/ca/* -run 'TestVault(CA)?Provider'
+	gotestsum --format=short-verbose --junitfile "$(TEST_RESULTS_DIR)/gotestsum-report.xml" -- ./agent/connect/ca
 else
 # Run locally
-	@echo "Running /agent/connect/ca TestVault(CA)?Provider tests in verbose mode"
-	@go test $(CURDIR)/agent/connect/ca/* -run 'TestVault(CA)?Provider' -v
+	@echo "Running /agent/connect/ca tests in verbose mode"
+	@go test -v ./agent/connect/ca
 endif
 
 proto-delete:
@@ -407,6 +382,6 @@ proto: $(PROTOGOFILES) $(PROTOGOBINFILES)
 	@$(SHELL) $(CURDIR)/build-support/scripts/proto-gen.sh --grpc --import-replace "$<"
 
 
-.PHONY: all ci bin dev dist cov test test-ci test-internal cover format vet ui static-assets tools
+.PHONY: all ci bin dev dist cov test test-flake test-internal cover lint ui static-assets tools
 .PHONY: docker-images go-build-image ui-build-image static-assets-docker consul-docker ui-docker
 .PHONY: version proto proto-rebuild proto-delete test-envoy-integ

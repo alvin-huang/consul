@@ -13,6 +13,8 @@ import (
 	"github.com/hashicorp/consul/sdk/testutil"
 	"github.com/hashicorp/consul/sdk/testutil/retry"
 	"github.com/hashicorp/consul/testrpc"
+	"github.com/hashicorp/consul/tlsutil"
+	"github.com/hashicorp/go-hclog"
 	msgpackrpc "github.com/hashicorp/net-rpc-msgpackrpc"
 	"github.com/hashicorp/serf/serf"
 	"github.com/stretchr/testify/require"
@@ -46,6 +48,7 @@ func testClientConfig(t *testing.T) (string, *Config) {
 	config.SerfLANConfig.MemberlistConfig.ProbeTimeout = 200 * time.Millisecond
 	config.SerfLANConfig.MemberlistConfig.ProbeInterval = time.Second
 	config.SerfLANConfig.MemberlistConfig.GossipInterval = 100 * time.Millisecond
+	config.LogOutput = testutil.TestWriter(t)
 
 	return dir, config
 }
@@ -69,7 +72,23 @@ func testClientWithConfig(t *testing.T, cb func(c *Config)) (string, *Client) {
 	if cb != nil {
 		cb(config)
 	}
-	client, err := NewClient(config)
+	w := config.LogOutput
+	if w == nil {
+		w = os.Stderr
+	}
+
+	logger := hclog.NewInterceptLogger(&hclog.LoggerOptions{
+		Name:   config.NodeName,
+		Level:  hclog.Debug,
+		Output: w,
+	})
+
+	tlsConf, err := tlsutil.NewConfigurator(config.ToTLSUtilConfig(), logger)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	client, err := NewClientLogger(config, logger, tlsConf)
 	if err != nil {
 		config.NotifyShutdown()
 		t.Fatalf("err: %v", err)
@@ -399,7 +418,7 @@ func TestClient_RPC_ConsulServerPing(t *testing.T) {
 	for range servers {
 		time.Sleep(200 * time.Millisecond)
 		s := c.routers.FindServer()
-		ok, err := c.connPool.Ping(s.Datacenter, s.Addr, s.Version)
+		ok, err := c.connPool.Ping(s.Datacenter, s.ShortName, s.Addr, s.Version)
 		if !ok {
 			t.Errorf("Unable to ping server %v: %s", s.String(), err)
 		}
@@ -705,27 +724,6 @@ func TestClientServer_UserEvent(t *testing.T) {
 
 	if !serverReceived || !clientReceived {
 		t.Fatalf("missing events")
-	}
-}
-
-func TestClient_Encrypted(t *testing.T) {
-	t.Parallel()
-	dir1, c1 := testClient(t)
-	defer os.RemoveAll(dir1)
-	defer c1.Shutdown()
-
-	key := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
-	dir2, c2 := testClientWithConfig(t, func(c *Config) {
-		c.SerfLANConfig.MemberlistConfig.SecretKey = key
-	})
-	defer os.RemoveAll(dir2)
-	defer c2.Shutdown()
-
-	if c1.Encrypted() {
-		t.Fatalf("should not be encrypted")
-	}
-	if !c2.Encrypted() {
-		t.Fatalf("should be encrypted")
 	}
 }
 

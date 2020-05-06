@@ -1,5 +1,25 @@
 ## UNRELEASED
 
+FEATURES:
+
+* acl: add DisplayName field to auth methods [[GH-7769](https://github.com/hashicorp/consul/issues/7769)]
+* acl: add MaxTokenTTL field to auth methods [[GH-7779](https://github.com/hashicorp/consul/issues/7779)]
+* agent: WAN federation via mesh gateways [[GH-6884](https://github.com/hashicorp/consul/issues/6884)]
+* cli: Add -config flag to "acl authmethod update/create" [[GH-7776](https://github.com/hashicorp/consul/pull/7776)]
+
+IMPROVEMENTS:
+
+* acl: change authmethod.Validator to take a logger [[GH-7758](https://github.com/hashicorp/consul/issues/7758)]
+* api: Added filtering support to the v1/connect/intentions endpoint. [[GH-7478](https://github.com/hashicorp/consul/issues/7478)]
+* license: **(Consul Enterprise only)** Update licensing to align with the current modules licensing structure.
+
+BUGFIXES:
+
+* agent: **(Consul Enterprise only)** Fixed several bugs related to Network Area and Network Segment compatibility with other features caused by incorrectly doing version or serf tag checking. [[GH-7491](https://github.com/hashicorp/consul/pull/7491)]
+* license: **(Consul Enterprise only)** Fixed a bug that would cause a license reset request to only be applied on the leader server.
+* sdk: Fix race condition in freeport [[GH-7567](https://github.com/hashicorp/consul/issues/7567)]
+* server: strip local ACL tokens from RPCs during forwarding if crossing datacenters [[GH-7419](https://github.com/hashicorp/consul/issues/7419)]
+
 ## 1.7.3 (May 05, 2020)
 
 IMPROVEMENTS:
@@ -37,11 +57,11 @@ BUGFIXES:
 
 IMPROVEMENTS:
 
-* agent: add http_config.response header to the UI headers [[GH-7369](https://github.com/hashicorp/consul/pull/7369)]
-* agent: Added documentation and error messages related to `kv_max_value_size` option [[GH-7405]](https://github.com/hashicorp/consul/pull/7405)]
-* agent: Take Prometheus MINE-type header into account [[GH-7371]](https://github.com/hashicorp/consul/pull/7371)]
 * agent: add option to configure max request length for `/v1/txn` endpoint [[GH-7388](https://github.com/hashicorp/consul/pull/7388)]
 * build: bump the expected go language version of the main module to 1.13 [[GH-7429](https://github.com/hashicorp/consul/issues/7429)]
+* agent: add http_config.response header to the UI headers [[GH-7369](https://github.com/hashicorp/consul/pull/7369)]
+* agent: Added documentation and error messages related to `kv_max_value_size` option [[GH-7405]](https://github.com/hashicorp/consul/pull/7405)]
+* agent: Take Prometheus MIME-type header into account [[GH-7371]](https://github.com/hashicorp/consul/pull/7371)]
 
 BUGFIXES:
 
@@ -74,6 +94,7 @@ BUGFIXES:
 * sessions: Fixed an issue that was causing deletions of a non-existent session to return a 500 when ACLs were enabled. [[GH-6840](https://github.com/hashicorp/consul/issues/6840)]
 * xds: Fix envoy retryOn behavior when multiple behaviors are configured [[GH-7280](https://github.com/hashicorp/consul/pull/7280)]
 * xds: Mesh Gateway fixes to prevent configuring extra clusters and for properly handling a service-resolvers default subset. [[GH-7294](https://github.com/hashicorp/consul/pull/7294)]
+* ui: Gracefully cope with errors in discovery-chain when connect is disabled [[GH-7291](https://github.com/hashicorp/consul/pull/7291)]
 
 ## 1.7.0 (February 11, 2020)
 
@@ -158,6 +179,7 @@ IMPROVEMENTS:
 * ui: Add ability to search nodes listing page with IP Address [[GH-7204](https://github.com/hashicorp/consul/pull/7204)]
 * xds: mesh gateway CDS requests are now allowed to receive an empty CDS reply [[GH-6787](https://github.com/hashicorp/consul/issues/6787)]
 * xds: Verified integration test suite with Envoy 1.12.2 & 1.13.0 [[GH-6947](https://github.com/hashicorp/consul/pull/7240)]
+* agent: Added ACL token for Consul managed service providers [[GH-7218](https://github.com/hashicorp/consul/pull/7218)]
 
 BUGFIXES:
 
@@ -183,6 +205,18 @@ BUGFIXES:
 * ui: Fix positioning of active icon in the selected menu item [[GH-7148](https://github.com/hashicorp/consul/pull/7148)]
 * ui: Discovery-Chain: Improve parsing of redirects [[GH-7174](https://github.com/hashicorp/consul/pull/7174)]
 * ui: Fix styling of ‘duplicate intention’ error message [[GH6936]](https://github.com/hashicorp/consul/pull/6936)
+
+## 1.6.5 (April 14, 2020)
+
+BUG FIXES:
+
+* agent: **(Consul Enterprise only)** Fixed several bugs related to Network Area and Network Segment compatibility with other features caused by incorrectly doing version or serf tag checking. [[GH-7551](https://github.com/hashicorp/consul/pull/7551)]
+
+## 1.6.4 (February 20, 2020)
+
+SECURITY:
+
+* dns: Updated miekg/dns dependency to fix a memory leak and CVE-2019-19794. [[GH-6984](https://github.com/hashicorp/consul/issues/6984)], [[GH-7261](https://github.com/hashicorp/consul/pull/7261)]
 
 ## 1.6.3 (January 30, 2020)
 

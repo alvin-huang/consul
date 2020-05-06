@@ -21,6 +21,9 @@ type ServiceSummary struct {
 	Name              string
 	Tags              []string
 	Nodes             []string
+	InstanceCount     int
+	ProxyFor          []string            `json:",omitempty"`
+	proxyForSet       map[string]struct{} // internal to track uniqueness
 	ChecksPassing     int
 	ChecksWarning     int
 	ChecksCritical    int
@@ -165,6 +168,9 @@ func summarizeServices(dump structs.CheckServiceNodes) []*ServiceSummary {
 			serv = &ServiceSummary{
 				Name:           service.ID,
 				EnterpriseMeta: service.EnterpriseMeta,
+				// the other code will increment this unconditionally so we
+				// shouldn't initialize it to 1
+				InstanceCount: 0,
 			}
 			summary[service] = serv
 			services = append(services, service)
@@ -172,13 +178,21 @@ func summarizeServices(dump structs.CheckServiceNodes) []*ServiceSummary {
 		return serv
 	}
 
-	var sid structs.ServiceID
 	for _, csn := range dump {
 		svc := csn.Service
-		sid.Init(svc.Service, &svc.EnterpriseMeta)
-		sum := getService(sid)
+		sum := getService(structs.NewServiceID(svc.Service, &svc.EnterpriseMeta))
 		sum.Nodes = append(sum.Nodes, csn.Node.Node)
 		sum.Kind = svc.Kind
+		sum.InstanceCount += 1
+		if svc.Kind == structs.ServiceKindConnectProxy {
+			if _, ok := sum.proxyForSet[svc.Proxy.DestinationServiceName]; !ok {
+				if sum.proxyForSet == nil {
+					sum.proxyForSet = make(map[string]struct{})
+				}
+				sum.proxyForSet[svc.Proxy.DestinationServiceName] = struct{}{}
+				sum.ProxyFor = append(sum.ProxyFor, svc.Proxy.DestinationServiceName)
+			}
+		}
 		for _, tag := range svc.Tags {
 			found := false
 			for _, existing := range sum.Tags {

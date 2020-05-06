@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -37,6 +38,7 @@ type ACLToken struct {
 	Roles             []*ACLTokenRoleLink   `json:",omitempty"`
 	ServiceIdentities []*ACLServiceIdentity `json:",omitempty"`
 	Local             bool
+	AuthMethod        string        `json:",omitempty"`
 	ExpirationTTL     time.Duration `json:",omitempty"`
 	ExpirationTime    *time.Time    `json:",omitempty"`
 	CreateTime        time.Time     `json:",omitempty"`
@@ -60,6 +62,7 @@ type ACLTokenListEntry struct {
 	Roles             []*ACLTokenRoleLink   `json:",omitempty"`
 	ServiceIdentities []*ACLServiceIdentity `json:",omitempty"`
 	Local             bool
+	AuthMethod        string     `json:",omitempty"`
 	ExpirationTime    *time.Time `json:",omitempty"`
 	CreateTime        time.Time
 	Hash              []byte
@@ -180,7 +183,9 @@ type ACLBindingRule struct {
 type ACLAuthMethod struct {
 	Name        string
 	Type        string
-	Description string
+	DisplayName string        `json:",omitempty"`
+	Description string        `json:",omitempty"`
+	MaxTokenTTL time.Duration `json:",omitempty"`
 
 	// Configuration is arbitrary configuration for the auth method. This
 	// should only contain primitive values and containers (such as lists and
@@ -190,15 +195,69 @@ type ACLAuthMethod struct {
 	CreateIndex uint64
 	ModifyIndex uint64
 
+	// NamespaceRules apply only on auth methods defined in the default namespace.
+	// Namespacing is a Consul Enterprise feature.
+	NamespaceRules []*ACLAuthMethodNamespaceRule `json:",omitempty"`
+
 	// Namespace is the namespace the ACLAuthMethod is associated with.
 	// Namespacing is a Consul Enterprise feature.
 	Namespace string `json:",omitempty"`
 }
 
+func (m *ACLAuthMethod) MarshalJSON() ([]byte, error) {
+	type Alias ACLAuthMethod
+	exported := &struct {
+		MaxTokenTTL string `json:",omitempty"`
+		*Alias
+	}{
+		MaxTokenTTL: m.MaxTokenTTL.String(),
+		Alias:       (*Alias)(m),
+	}
+	if m.MaxTokenTTL == 0 {
+		exported.MaxTokenTTL = ""
+	}
+
+	return json.Marshal(exported)
+}
+
+func (m *ACLAuthMethod) UnmarshalJSON(data []byte) error {
+	type Alias ACLAuthMethod
+	aux := &struct {
+		MaxTokenTTL string
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	var err error
+	if aux.MaxTokenTTL != "" {
+		if m.MaxTokenTTL, err = time.ParseDuration(aux.MaxTokenTTL); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type ACLAuthMethodNamespaceRule struct {
+	// Selector is an expression that matches against verified identity
+	// attributes returned from the auth method during login.
+	Selector string `json:",omitempty"`
+
+	// BindNamespace is the target namespace of the binding. Can be lightly
+	// templated using HIL ${foo} syntax from available field names.
+	//
+	// If empty it's created in the same namespace as the auth method.
+	BindNamespace string `json:",omitempty"`
+}
+
 type ACLAuthMethodListEntry struct {
 	Name        string
 	Type        string
-	Description string
+	DisplayName string `json:",omitempty"`
+	Description string `json:",omitempty"`
 	CreateIndex uint64
 	ModifyIndex uint64
 

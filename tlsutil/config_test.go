@@ -16,7 +16,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func startTLSServer(config *Config) (net.Conn, chan error) {
+func startRPCTLSServer(config *Config) (net.Conn, chan error) {
+	return startTLSServer(config, nil, false)
+}
+
+func startALPNRPCTLSServer(config *Config, alpnProtos []string) (net.Conn, chan error) {
+	return startTLSServer(config, alpnProtos, true)
+}
+
+func startTLSServer(config *Config, alpnProtos []string, doAlpnVariant bool) (net.Conn, chan error) {
 	errc := make(chan error, 1)
 
 	c, err := NewConfigurator(*config, nil)
@@ -24,7 +32,12 @@ func startTLSServer(config *Config) (net.Conn, chan error) {
 		errc <- err
 		return nil, errc
 	}
-	tlsConfigServer := c.IncomingRPCConfig()
+	var tlsConfigServer *tls.Config
+	if doAlpnVariant {
+		tlsConfigServer = c.IncomingALPNRPCConfig(alpnProtos)
+	} else {
+		tlsConfigServer = c.IncomingRPCConfig()
+	}
 	client, server := net.Pipe()
 
 	// Use yamux to buffer the reads, otherwise it's easy to deadlock
@@ -63,7 +76,7 @@ func TestConfigurator_outgoingWrapper_OK(t *testing.T) {
 		Domain:               "consul",
 	}
 
-	client, errc := startTLSServer(&config)
+	client, errc := startRPCTLSServer(&config)
 	if client == nil {
 		t.Fatalf("startTLSServer err: %v", <-errc)
 	}
@@ -93,7 +106,7 @@ func TestConfigurator_outgoingWrapper_noverify_OK(t *testing.T) {
 		Domain:         "consul",
 	}
 
-	client, errc := startTLSServer(&config)
+	client, errc := startRPCTLSServer(&config)
 	if client == nil {
 		t.Fatalf("startTLSServer err: %v", <-errc)
 	}
@@ -124,7 +137,7 @@ func TestConfigurator_outgoingWrapper_BadDC(t *testing.T) {
 		Domain:               "consul",
 	}
 
-	client, errc := startTLSServer(&config)
+	client, errc := startRPCTLSServer(&config)
 	if client == nil {
 		t.Fatalf("startTLSServer err: %v", <-errc)
 	}
@@ -154,7 +167,7 @@ func TestConfigurator_outgoingWrapper_BadCert(t *testing.T) {
 		Domain:               "consul",
 	}
 
-	client, errc := startTLSServer(&config)
+	client, errc := startRPCTLSServer(&config)
 	if client == nil {
 		t.Fatalf("startTLSServer err: %v", <-errc)
 	}
@@ -175,6 +188,133 @@ func TestConfigurator_outgoingWrapper_BadCert(t *testing.T) {
 	<-errc
 }
 
+func TestConfigurator_outgoingWrapperALPN_OK(t *testing.T) {
+	config := Config{
+		CAFile:               "../test/hostname/CertAuth.crt",
+		CertFile:             "../test/hostname/Bob.crt",
+		KeyFile:              "../test/hostname/Bob.key",
+		VerifyServerHostname: false, // doesn't matter
+		VerifyOutgoing:       false, // doesn't matter
+		Domain:               "consul",
+	}
+
+	client, errc := startALPNRPCTLSServer(&config, []string{"foo", "bar"})
+	if client == nil {
+		t.Fatalf("startTLSServer err: %v", <-errc)
+	}
+
+	c, err := NewConfigurator(config, nil)
+	require.NoError(t, err)
+	wrap := c.OutgoingALPNRPCWrapper()
+	require.NotNil(t, wrap)
+
+	tlsClient, err := wrap("dc1", "bob", "foo", client)
+	require.NoError(t, err)
+	defer tlsClient.Close()
+
+	tlsConn := tlsClient.(*tls.Conn)
+	cs := tlsConn.ConnectionState()
+	require.Equal(t, "foo", cs.NegotiatedProtocol)
+	require.True(t, cs.NegotiatedProtocolIsMutual)
+
+	err = <-errc
+	require.NoError(t, err)
+}
+
+func TestConfigurator_outgoingWrapperALPN_serverHasNoNodeNameInSAN(t *testing.T) {
+	srvConfig := Config{
+		CAFile:               "../test/hostname/CertAuth.crt",
+		CertFile:             "../test/hostname/Alice.crt",
+		KeyFile:              "../test/hostname/Alice.key",
+		VerifyServerHostname: false, // doesn't matter
+		VerifyOutgoing:       false, // doesn't matter
+		Domain:               "consul",
+	}
+
+	client, errc := startALPNRPCTLSServer(&srvConfig, []string{"foo", "bar"})
+	if client == nil {
+		t.Fatalf("startTLSServer err: %v", <-errc)
+	}
+
+	config := Config{
+		CAFile:               "../test/hostname/CertAuth.crt",
+		CertFile:             "../test/hostname/Bob.crt",
+		KeyFile:              "../test/hostname/Bob.key",
+		VerifyServerHostname: false, // doesn't matter
+		VerifyOutgoing:       false, // doesn't matter
+		Domain:               "consul",
+	}
+
+	c, err := NewConfigurator(config, nil)
+	require.NoError(t, err)
+	wrap := c.OutgoingALPNRPCWrapper()
+	require.NotNil(t, wrap)
+
+	_, err = wrap("dc1", "bob", "foo", client)
+	require.Error(t, err)
+	_, ok := err.(x509.HostnameError)
+	require.True(t, ok)
+	client.Close()
+
+	<-errc
+}
+
+func TestConfigurator_outgoingWrapperALPN_BadDC(t *testing.T) {
+	config := Config{
+		CAFile:               "../test/hostname/CertAuth.crt",
+		CertFile:             "../test/hostname/Bob.crt",
+		KeyFile:              "../test/hostname/Bob.key",
+		VerifyServerHostname: false, // doesn't matter
+		VerifyOutgoing:       false, // doesn't matter
+		Domain:               "consul",
+	}
+
+	client, errc := startALPNRPCTLSServer(&config, []string{"foo", "bar"})
+	if client == nil {
+		t.Fatalf("startTLSServer err: %v", <-errc)
+	}
+
+	c, err := NewConfigurator(config, nil)
+	require.NoError(t, err)
+	wrap := c.OutgoingALPNRPCWrapper()
+
+	_, err = wrap("dc2", "bob", "foo", client)
+	require.Error(t, err)
+	_, ok := err.(x509.HostnameError)
+	require.True(t, ok)
+	client.Close()
+
+	<-errc
+}
+
+func TestConfigurator_outgoingWrapperALPN_BadCert(t *testing.T) {
+	config := Config{
+		CAFile:               "../test/ca/root.cer",
+		CertFile:             "../test/key/ourdomain.cer",
+		KeyFile:              "../test/key/ourdomain.key",
+		VerifyServerHostname: false, // doesn't matter
+		VerifyOutgoing:       false, // doesn't matter
+		Domain:               "consul",
+	}
+
+	client, errc := startALPNRPCTLSServer(&config, []string{"foo", "bar"})
+	if client == nil {
+		t.Fatalf("startTLSServer err: %v", <-errc)
+	}
+
+	c, err := NewConfigurator(config, nil)
+	require.NoError(t, err)
+	wrap := c.OutgoingALPNRPCWrapper()
+
+	_, err = wrap("dc1", "bob", "foo", client)
+	require.Error(t, err)
+	_, ok := err.(x509.HostnameError)
+	require.True(t, ok)
+	client.Close()
+
+	<-errc
+}
+
 func TestConfigurator_wrapTLS_OK(t *testing.T) {
 	config := Config{
 		CAFile:         "../test/ca/root.cer",
@@ -183,7 +323,7 @@ func TestConfigurator_wrapTLS_OK(t *testing.T) {
 		VerifyOutgoing: true,
 	}
 
-	client, errc := startTLSServer(&config)
+	client, errc := startRPCTLSServer(&config)
 	if client == nil {
 		t.Fatalf("startTLSServer err: %v", <-errc)
 	}
@@ -205,7 +345,7 @@ func TestConfigurator_wrapTLS_BadCert(t *testing.T) {
 		KeyFile:  "../test/key/ssl-cert-snakeoil.key",
 	}
 
-	client, errc := startTLSServer(serverConfig)
+	client, errc := startRPCTLSServer(serverConfig)
 	if client == nil {
 		t.Fatalf("startTLSServer err: %v", <-errc)
 	}
@@ -227,52 +367,28 @@ func TestConfigurator_wrapTLS_BadCert(t *testing.T) {
 
 func TestConfig_ParseCiphers(t *testing.T) {
 	testOk := strings.Join([]string{
-		"TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305",
-		"TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305",
-		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-		"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
-		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
-		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
-		"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
 		"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
-		"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+		"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 		"TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
-		"TLS_RSA_WITH_AES_128_GCM_SHA256",
-		"TLS_RSA_WITH_AES_256_GCM_SHA384",
-		"TLS_RSA_WITH_AES_128_CBC_SHA256",
-		"TLS_RSA_WITH_AES_128_CBC_SHA",
-		"TLS_RSA_WITH_AES_256_CBC_SHA",
-		"TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA",
-		"TLS_RSA_WITH_3DES_EDE_CBC_SHA",
-		"TLS_RSA_WITH_RC4_128_SHA",
-		"TLS_ECDHE_RSA_WITH_RC4_128_SHA",
-		"TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
+		"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+		"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
 	}, ",")
 	ciphers := []uint16{
-		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
-		tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-		tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-		tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
-		tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-		tls.TLS_RSA_WITH_RC4_128_SHA,
-		tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA,
-		tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 	}
 	v, err := ParseCiphers(testOk)
 	require.NoError(t, err)
@@ -643,6 +759,77 @@ func TestConfigurator_OutgoingRPCTLSDisabled(t *testing.T) {
 	}
 }
 
+func TestConfigurator_MutualTLSCapable(t *testing.T) {
+	t.Run("no ca", func(t *testing.T) {
+		config := Config{
+			Domain: "consul",
+		}
+		c, err := NewConfigurator(config, nil)
+		require.NoError(t, err)
+
+		require.False(t, c.mutualTLSCapable())
+	})
+
+	t.Run("ca and no keys", func(t *testing.T) {
+		config := Config{
+			CAFile: "../test/hostname/CertAuth.crt",
+			Domain: "consul",
+		}
+		c, err := NewConfigurator(config, nil)
+		require.NoError(t, err)
+
+		require.False(t, c.mutualTLSCapable())
+	})
+
+	t.Run("ca and manual key", func(t *testing.T) {
+		config := Config{
+			CAFile:   "../test/hostname/CertAuth.crt",
+			CertFile: "../test/hostname/Bob.crt",
+			KeyFile:  "../test/hostname/Bob.key",
+			Domain:   "consul",
+		}
+		c, err := NewConfigurator(config, nil)
+		require.NoError(t, err)
+
+		require.True(t, c.mutualTLSCapable())
+	})
+
+	loadFile := func(t *testing.T, path string) string {
+		data, err := ioutil.ReadFile(path)
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	t.Run("autoencrypt ca and no autoencrypt keys", func(t *testing.T) {
+		config := Config{
+			Domain: "consul",
+		}
+		c, err := NewConfigurator(config, nil)
+		require.NoError(t, err)
+
+		caPEM := loadFile(t, "../test/hostname/CertAuth.crt")
+		require.NoError(t, c.UpdateAutoEncryptCA([]string{caPEM}))
+
+		require.False(t, c.mutualTLSCapable())
+	})
+
+	t.Run("autoencrypt ca and autoencrypt key", func(t *testing.T) {
+		config := Config{
+			Domain: "consul",
+		}
+		c, err := NewConfigurator(config, nil)
+		require.NoError(t, err)
+
+		caPEM := loadFile(t, "../test/hostname/CertAuth.crt")
+		certPEM := loadFile(t, "../test/hostname/Bob.crt")
+		keyPEM := loadFile(t, "../test/hostname/Bob.key")
+		require.NoError(t, c.UpdateAutoEncryptCA([]string{caPEM}))
+		require.NoError(t, c.UpdateAutoEncryptCert(certPEM, keyPEM))
+
+		require.True(t, c.mutualTLSCapable())
+	})
+}
+
 func TestConfigurator_VerifyIncomingRPC(t *testing.T) {
 	c := Configurator{base: &Config{
 		VerifyIncomingRPC: true,
@@ -677,10 +864,38 @@ func TestConfigurator_IncomingRPCConfig(t *testing.T) {
 	require.NoError(t, err)
 	tlsConf := c.IncomingRPCConfig()
 	require.Equal(t, tls.RequireAndVerifyClientCert, tlsConf.ClientAuth)
+	require.Empty(t, tlsConf.NextProtos)
+	require.Empty(t, tlsConf.ServerName)
+
 	require.NotNil(t, tlsConf.GetConfigForClient)
 	tlsConf, err = tlsConf.GetConfigForClient(nil)
 	require.NoError(t, err)
 	require.Equal(t, tls.RequireAndVerifyClientCert, tlsConf.ClientAuth)
+	require.Empty(t, tlsConf.NextProtos)
+	require.Empty(t, tlsConf.ServerName)
+}
+
+func TestConfigurator_IncomingALPNRPCConfig(t *testing.T) {
+	c, err := NewConfigurator(Config{
+		VerifyIncomingRPC: false, // ignored, assumed true
+		CAFile:            "../test/ca/root.cer",
+		CertFile:          "../test/key/ourdomain.cer",
+		KeyFile:           "../test/key/ourdomain.key",
+	}, nil)
+	require.NoError(t, err)
+	tlsConf := c.IncomingALPNRPCConfig([]string{"foo/1", "bar/2"})
+	require.Equal(t, tls.RequireAndVerifyClientCert, tlsConf.ClientAuth)
+	require.False(t, tlsConf.InsecureSkipVerify)
+	require.Equal(t, []string{"foo/1", "bar/2"}, tlsConf.NextProtos)
+	require.Empty(t, tlsConf.ServerName)
+
+	require.NotNil(t, tlsConf.GetConfigForClient)
+	tlsConf, err = tlsConf.GetConfigForClient(nil)
+	require.NoError(t, err)
+	require.Equal(t, tls.RequireAndVerifyClientCert, tlsConf.ClientAuth)
+	require.False(t, tlsConf.InsecureSkipVerify)
+	require.Equal(t, []string{"foo/1", "bar/2"}, tlsConf.NextProtos)
+	require.Empty(t, tlsConf.ServerName)
 }
 
 func TestConfigurator_IncomingHTTPSConfig(t *testing.T) {
@@ -706,13 +921,64 @@ func TestConfigurator_OutgoingTLSConfigForChecks(t *testing.T) {
 }
 
 func TestConfigurator_OutgoingRPCConfig(t *testing.T) {
-	c := Configurator{base: &Config{}, autoEncrypt: &autoEncrypt{}}
+	c := &Configurator{base: &Config{}, autoEncrypt: &autoEncrypt{}}
 	require.Nil(t, c.OutgoingRPCConfig())
-	c.base.VerifyOutgoing = true
-	require.NotNil(t, c.OutgoingRPCConfig())
+
+	c, err := NewConfigurator(Config{
+		VerifyOutgoing: true,
+		CAFile:         "../test/ca/root.cer",
+	}, nil)
+	require.NoError(t, err)
+
+	tlsConf := c.OutgoingRPCConfig()
+	require.NotNil(t, tlsConf)
+	require.Equal(t, tls.NoClientCert, tlsConf.ClientAuth)
+	require.True(t, tlsConf.InsecureSkipVerify)
+	require.Empty(t, tlsConf.NextProtos)
+	require.Empty(t, tlsConf.ServerName)
+}
+
+func TestConfigurator_OutgoingALPNRPCConfig(t *testing.T) {
+	c := &Configurator{base: &Config{}, autoEncrypt: &autoEncrypt{}}
+	require.Nil(t, c.OutgoingALPNRPCConfig())
+
+	c, err := NewConfigurator(Config{
+		VerifyOutgoing: false, // ignored, assumed true
+		CAFile:         "../test/ca/root.cer",
+		CertFile:       "../test/key/ourdomain.cer",
+		KeyFile:        "../test/key/ourdomain.key",
+	}, nil)
+	require.NoError(t, err)
+
+	tlsConf := c.OutgoingALPNRPCConfig()
+	require.NotNil(t, tlsConf)
+	require.Equal(t, tls.RequireAndVerifyClientCert, tlsConf.ClientAuth)
+	require.False(t, tlsConf.InsecureSkipVerify)
+	require.Empty(t, tlsConf.NextProtos)
+	require.Empty(t, tlsConf.ServerName)
 }
 
 func TestConfigurator_OutgoingRPCWrapper(t *testing.T) {
+	c := &Configurator{base: &Config{}, autoEncrypt: &autoEncrypt{}}
+	wrapper := c.OutgoingRPCWrapper()
+	require.NotNil(t, wrapper)
+	conn := &net.TCPConn{}
+	cWrap, err := wrapper("", conn)
+	require.Equal(t, conn, cWrap)
+
+	c, err = NewConfigurator(Config{
+		VerifyOutgoing: true,
+		CAFile:         "../test/ca/root.cer",
+	}, nil)
+	require.NoError(t, err)
+
+	wrapper = c.OutgoingRPCWrapper()
+	require.NotNil(t, wrapper)
+	cWrap, err = wrapper("", conn)
+	require.NotEqual(t, conn, cWrap)
+}
+
+func TestConfigurator_OutgoingALPNRPCWrapper(t *testing.T) {
 	c := &Configurator{base: &Config{}, autoEncrypt: &autoEncrypt{}}
 	wrapper := c.OutgoingRPCWrapper()
 	require.NotNil(t, wrapper)

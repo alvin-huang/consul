@@ -127,7 +127,6 @@ func ConfigSourceFromName(name string) (configSource, bool) {
 // delegate defines the interface shared by both
 // consul.Client and consul.Server.
 type delegate interface {
-	Encrypted() bool
 	GetLANCoordinate() (lib.CoordinateSet, error)
 	Leave() error
 	LANMembers() []serf.Member
@@ -167,7 +166,13 @@ type Agent struct {
 	// Used for writing our logs
 	logger hclog.InterceptLogger
 
-	// Output sink for logs
+	// LogOutput is a Writer which is used when creating dependencies that
+	// require logging. Note that this LogOutput is not used by the agent logger,
+	// so setting this field does not result in the agent logs being written to
+	// LogOutput.
+	// FIXME: refactor so that: dependencies accept an hclog.Logger,
+	// or LogOutput is part of RuntimeConfig, or change Agent.logger to be
+	// a new type with an Out() io.Writer method which returns this value.
 	LogOutput io.Writer
 
 	// In-memory sink used for collecting metrics
@@ -291,9 +296,6 @@ type Agent struct {
 	// the centrally configured proxy/service defaults.
 	serviceManager *ServiceManager
 
-	// xdsServer is the Server instance that serves xDS gRPC API.
-	xdsServer *xds.Server
-
 	// grpcServer is the server instance used currently to serve xDS API for
 	// Envoy.
 	grpcServer *grpc.Server
@@ -310,6 +312,9 @@ type Agent struct {
 	// httpConnLimiter is used to limit connections to the HTTP server by client
 	// IP.
 	httpConnLimiter connlimit.Limiter
+
+	// enterpriseAgent embeds fields that we only access in consul-enterprise builds
+	enterpriseAgent
 }
 
 // New verifies the configuration given has a Datacenter and DataDir
@@ -382,6 +387,11 @@ func (a *Agent) Start() error {
 
 	c := a.config
 
+	if err := a.CheckSecurity(c); err != nil {
+		a.logger.Error("Security error while parsing configuration: %#v", err)
+		return err
+	}
+
 	// Warn if the node name is incompatible with DNS
 	if InvalidDnsRe.MatchString(a.config.NodeName) {
 		a.logger.Warn("Node name will not be discoverable "+
@@ -423,7 +433,10 @@ func (a *Agent) Start() error {
 	// waiting to discover a consul server
 	consulCfg.ServerUp = a.sync.SyncFull.Trigger
 
-	a.initEnterprise(consulCfg)
+	err = a.initEnterprise(consulCfg)
+	if err != nil {
+		return fmt.Errorf("failed to start Consul enterprise component: %v", err)
+	}
 
 	tlsConfigurator, err := tlsutil.NewConfigurator(c.ToTLSUtilConfig(), a.logger)
 	if err != nil {
@@ -498,6 +511,7 @@ func (a *Agent) Start() error {
 			Datacenter: a.config.Datacenter,
 			Segment:    a.config.SegmentName,
 		},
+		TLSConfigurator: a.tlsConfigurator,
 	})
 	if err != nil {
 		return err
@@ -562,7 +576,9 @@ func (a *Agent) Start() error {
 
 	// start retry join
 	go a.retryJoinLAN()
-	go a.retryJoinWAN()
+	if a.config.ServerMode {
+		go a.retryJoinWAN()
+	}
 
 	return nil
 }
@@ -575,7 +591,7 @@ func (a *Agent) setupClientAutoEncrypt() (*structs.SignedResponse, error) {
 	if err != nil && len(addrs) == 0 {
 		return nil, err
 	}
-	addrs = append(addrs, retryJoinAddrs(disco, "LAN", a.config.RetryJoinLAN, a.logger)...)
+	addrs = append(addrs, retryJoinAddrs(disco, retryJoinSerfVariant, "LAN", a.config.RetryJoinLAN, a.logger)...)
 
 	reply, priv, err := client.RequestAutoEncryptCerts(addrs, a.config.ServerPort, a.tokens.AgentToken(), a.InterruptStartCh)
 	if err != nil {
@@ -733,7 +749,7 @@ func (a *Agent) listenAndServeGRPC() error {
 		return nil
 	}
 
-	a.xdsServer = &xds.Server{
+	xdsServer := &xds.Server{
 		Logger:       a.logger,
 		CfgMgr:       a.proxyConfig,
 		Authz:        a,
@@ -741,15 +757,15 @@ func (a *Agent) listenAndServeGRPC() error {
 		CheckFetcher: a,
 		CfgFetcher:   a,
 	}
-	a.xdsServer.Initialize()
+	xdsServer.Initialize()
 
 	var err error
 	if a.config.HTTPSPort > 0 {
 		// gRPC uses the same TLS settings as the HTTPS API. If HTTPS is
 		// enabled then gRPC will require HTTPS as well.
-		a.grpcServer, err = a.xdsServer.GRPCServer(a.tlsConfigurator)
+		a.grpcServer, err = xdsServer.GRPCServer(a.tlsConfigurator)
 	} else {
-		a.grpcServer, err = a.xdsServer.GRPCServer(nil)
+		a.grpcServer, err = xdsServer.GRPCServer(nil)
 	}
 	if err != nil {
 		return err
@@ -1341,6 +1357,7 @@ func (a *Agent) consulConfig() (*consul.Config, error) {
 	// Copy the Connect CA bootstrap config
 	if a.config.ConnectEnabled {
 		base.ConnectEnabled = true
+		base.ConnectMeshGatewayWANFederationEnabled = a.config.ConnectMeshGatewayWANFederationEnabled
 
 		// Allow config to specify cluster_id provided it's a valid UUID. This is
 		// meant only for tests where a deterministic ID makes fixtures much simpler
@@ -1704,15 +1721,6 @@ func (a *Agent) RPC(method string, args interface{}, reply interface{}) error {
 	return a.delegate.RPC(method, args, reply)
 }
 
-// SnapshotRPC performs the requested snapshot RPC against the Consul server in
-// a streaming manner. The contents of in will be read and passed along as the
-// payload, and the response message will determine the error status, and any
-// return payload will be written to out.
-func (a *Agent) SnapshotRPC(args *structs.SnapshotRequest, in io.Reader, out io.Writer,
-	replyFn structs.SnapshotReplyFn) error {
-	return a.delegate.SnapshotRPC(args, in, out, replyFn)
-}
-
 // Leave is used to prepare the agent for a graceful shutdown
 func (a *Agent) Leave() error {
 	return a.delegate.Leave()
@@ -1897,6 +1905,34 @@ func (a *Agent) JoinWAN(addrs []string) (n int, err error) {
 		)
 	}
 	return
+}
+
+// PrimaryMeshGatewayAddressesReadyCh returns a channel that will be closed
+// when federation state replication ships back at least one primary mesh
+// gateway (not via fallback config).
+func (a *Agent) PrimaryMeshGatewayAddressesReadyCh() <-chan struct{} {
+	if srv, ok := a.delegate.(*consul.Server); ok {
+		return srv.PrimaryMeshGatewayAddressesReadyCh()
+	}
+	return nil
+}
+
+// PickRandomMeshGatewaySuitableForDialing is a convenience function used for writing tests.
+func (a *Agent) PickRandomMeshGatewaySuitableForDialing(dc string) string {
+	if srv, ok := a.delegate.(*consul.Server); ok {
+		return srv.PickRandomMeshGatewaySuitableForDialing(dc)
+	}
+	return ""
+}
+
+// RefreshPrimaryGatewayFallbackAddresses is used to update the list of current
+// fallback addresses for locating mesh gateways in the primary datacenter.
+func (a *Agent) RefreshPrimaryGatewayFallbackAddresses(addrs []string) error {
+	if srv, ok := a.delegate.(*consul.Server); ok {
+		srv.RefreshPrimaryGatewayFallbackAddresses(addrs)
+		return nil
+	}
+	return fmt.Errorf("Must be a server to track mesh gateways in the primary datacenter")
 }
 
 // ForceLeave is used to remove a failed node from the cluster
@@ -2426,8 +2462,7 @@ func (a *Agent) addServiceInternal(req *addServiceRequest, snap map[structs.Chec
 			}
 		}
 
-		var cid structs.CheckID
-		cid.Init(types.CheckID(checkID), &service.EnterpriseMeta)
+		cid := structs.NewCheckID(types.CheckID(checkID), &service.EnterpriseMeta)
 		existingChecks[cid] = true
 
 		name := chkType.Name
@@ -2501,11 +2536,10 @@ func (a *Agent) addServiceInternal(req *addServiceRequest, snap map[structs.Chec
 
 	// If a proxy service wishes to expose checks, check targets need to be rerouted to the proxy listener
 	// This needs to be called after chkTypes are added to the agent, to avoid being overwritten
-	var psid structs.ServiceID
-	psid.Init(service.Proxy.DestinationServiceID, &service.EnterpriseMeta)
+	psid := structs.NewServiceID(service.Proxy.DestinationServiceID, &service.EnterpriseMeta)
 
 	if service.Proxy.Expose.Checks {
-		err := a.rerouteExposedChecks(psid, service.Proxy.LocalServiceAddress)
+		err := a.rerouteExposedChecks(psid, service.Address)
 		if err != nil {
 			a.logger.Warn("failed to reroute L7 checks to exposed proxy listener")
 		}
@@ -2710,8 +2744,7 @@ func (a *Agent) removeServiceLocked(serviceID structs.ServiceID, persist bool) e
 	svc := a.State.Service(serviceID)
 
 	if svc != nil {
-		var psid structs.ServiceID
-		psid.Init(svc.Proxy.DestinationServiceID, &svc.EnterpriseMeta)
+		psid := structs.NewServiceID(svc.Proxy.DestinationServiceID, &svc.EnterpriseMeta)
 		a.resetExposedChecks(psid)
 	}
 
@@ -2754,8 +2787,7 @@ func (a *Agent) removeServiceLocked(serviceID structs.ServiceID, persist bool) e
 }
 
 func (a *Agent) removeServiceSidecars(serviceID structs.ServiceID, persist bool) error {
-	var sidecarSID structs.ServiceID
-	sidecarSID.Init(a.sidecarServiceID(serviceID.ID), &serviceID.EnterpriseMeta)
+	sidecarSID := structs.NewServiceID(a.sidecarServiceID(serviceID.ID), &serviceID.EnterpriseMeta)
 	if sidecar := a.State.Service(sidecarSID); sidecar != nil {
 		// Double check that it's not just an ID collision and we actually added
 		// this from a sidecar.
@@ -2949,7 +2981,7 @@ func (a *Agent) addCheck(check *structs.HealthCheck, chkType *structs.CheckType,
 					)
 					return err
 				}
-				http.ProxyHTTP = httpInjectAddr(http.HTTP, proxy.Proxy.LocalServiceAddress, port)
+				http.ProxyHTTP = httpInjectAddr(http.HTTP, proxy.Address, port)
 			}
 
 			http.Start()
@@ -3018,7 +3050,7 @@ func (a *Agent) addCheck(check *structs.HealthCheck, chkType *structs.CheckType,
 					)
 					return err
 				}
-				grpc.ProxyGRPC = grpcInjectAddr(grpc.GRPC, proxy.Proxy.LocalServiceAddress, port)
+				grpc.ProxyGRPC = grpcInjectAddr(grpc.GRPC, proxy.Address, port)
 			}
 
 			grpc.Start()
@@ -3108,8 +3140,7 @@ func (a *Agent) addCheck(check *structs.HealthCheck, chkType *structs.CheckType,
 				rpcReq.Token = token
 			}
 
-			var aliasServiceID structs.ServiceID
-			aliasServiceID.Init(chkType.AliasService, &check.EnterpriseMeta)
+			aliasServiceID := structs.NewServiceID(chkType.AliasService, &check.EnterpriseMeta)
 			chkImpl := &checks.CheckAlias{
 				Notify:         a.State,
 				RPC:            a.delegate,
@@ -3206,6 +3237,8 @@ func (a *Agent) removeCheckLocked(checkID structs.CheckID, persist bool) error {
 	return nil
 }
 
+// ServiceHTTPBasedChecks returns HTTP and GRPC based Checks
+// for the given serviceID
 func (a *Agent) ServiceHTTPBasedChecks(serviceID structs.ServiceID) []structs.CheckType {
 	a.stateLock.Lock()
 	defer a.stateLock.Unlock()
@@ -3224,6 +3257,7 @@ func (a *Agent) ServiceHTTPBasedChecks(serviceID structs.ServiceID) []structs.Ch
 	return chkTypes
 }
 
+// AdvertiseAddrLAN returns the AdvertiseAddrLAN config value
 func (a *Agent) AdvertiseAddrLAN() string {
 	return a.config.AdvertiseAddrLAN.String()
 }
@@ -3405,10 +3439,6 @@ func (a *Agent) purgeCheckState(checkID structs.CheckID) error {
 		return nil
 	}
 	return err
-}
-
-func (a *Agent) GossipEncrypted() bool {
-	return a.delegate.Encrypted()
 }
 
 // Stats is used to get various debugging state from the sub-systems
@@ -3638,7 +3668,7 @@ func (a *Agent) loadServices(conf *config.RuntimeConfig, snap map[structs.CheckI
 		}
 	}
 
-	for serviceID, _ := range persistedServiceConfigs {
+	for serviceID := range persistedServiceConfigs {
 		if a.State.Service(serviceID) == nil {
 			// This can be cleaned up now.
 			if err := a.purgeServiceConfig(serviceID); err != nil {
@@ -3808,6 +3838,21 @@ func (a *Agent) getPersistedTokens() (*persistedTokens, error) {
 	return persistedTokens, nil
 }
 
+// CheckSecurity Performs security checks in Consul Configuration
+// It might return an error if configuration is considered too dangerous
+func (a *Agent) CheckSecurity(conf *config.RuntimeConfig) error {
+	if conf.EnableRemoteScriptChecks {
+		if !conf.ACLsEnabled {
+			if len(conf.AllowWriteHTTPFrom) == 0 {
+				err := fmt.Errorf("using enable-script-checks without ACLs and without allow_write_http_from is DANGEROUS, use enable-local-script-checks instead, see https://www.hashicorp.com/blog/protecting-consul-from-rce-risk-in-specific-configurations/")
+				a.logger.Error("[SECURITY] issue", "error", err)
+				// TODO: return the error in future Consul versions
+			}
+		}
+	}
+	return nil
+}
+
 func (a *Agent) loadTokens(conf *config.RuntimeConfig) error {
 	persistedTokens, persistenceErr := a.getPersistedTokens()
 
@@ -3883,9 +3928,8 @@ func (a *Agent) unloadMetadata() {
 
 // serviceMaintCheckID returns the ID of a given service's maintenance check
 func serviceMaintCheckID(serviceID structs.ServiceID) structs.CheckID {
-	var cid structs.CheckID
-	cid.Init(types.CheckID(structs.ServiceMaintPrefix+serviceID.ID), &serviceID.EnterpriseMeta)
-	return cid
+	cid := types.CheckID(structs.ServiceMaintPrefix + serviceID.ID)
+	return structs.NewCheckID(cid, &serviceID.EnterpriseMeta)
 }
 
 // EnableServiceMaintenance will register a false health check against the given
@@ -3985,7 +4029,14 @@ func (a *Agent) loadLimits(conf *config.RuntimeConfig) {
 	a.config.RPCMaxBurst = conf.RPCMaxBurst
 }
 
+// ReloadConfig will atomically reload all configs from the given newCfg,
+// including all services, checks, tokens, metadata, dnsServer configs, etc.
+// It will also reload all ongoing watches.
 func (a *Agent) ReloadConfig(newCfg *config.RuntimeConfig) error {
+	if err := a.CheckSecurity(newCfg); err != nil {
+		a.logger.Error("Security error while reloading configuration: %#v", err)
+		return err
+	}
 	// Bulk update the services and checks
 	a.PauseSync()
 	defer a.ResumeSync()
@@ -4049,6 +4100,11 @@ func (a *Agent) ReloadConfig(newCfg *config.RuntimeConfig) error {
 	// an in place modification is safe as reloads cannot be
 	// concurrent due to both gaining a full lock on the stateLock
 	a.config.ConfigEntryBootstrap = newCfg.ConfigEntryBootstrap
+
+	err := a.reloadEnterprise(newCfg)
+	if err != nil {
+		return err
+	}
 
 	// create the config for the rpc server/client
 	consulCfg, err := a.consulConfig()
@@ -4137,136 +4193,48 @@ func (a *Agent) registerCache() {
 	// the a.delegate directly, otherwise tests that rely on overriding RPC
 	// routing via a.registerEndpoint will not work.
 
-	a.cache.RegisterType(cachetype.ConnectCARootName, &cachetype.ConnectCARoot{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.ConnectCARootName, &cachetype.ConnectCARoot{RPC: a})
 
 	a.cache.RegisterType(cachetype.ConnectCALeafName, &cachetype.ConnectCALeaf{
 		RPC:                              a,
 		Cache:                            a.cache,
 		Datacenter:                       a.config.Datacenter,
 		TestOverrideCAChangeInitialDelay: a.config.ConnectTestCALeafRootChangeSpread,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
 	})
 
-	a.cache.RegisterType(cachetype.IntentionMatchName, &cachetype.IntentionMatch{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.IntentionMatchName, &cachetype.IntentionMatch{RPC: a})
 
-	a.cache.RegisterType(cachetype.CatalogServicesName, &cachetype.CatalogServices{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.CatalogServicesName, &cachetype.CatalogServices{RPC: a})
 
-	a.cache.RegisterType(cachetype.HealthServicesName, &cachetype.HealthServices{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.HealthServicesName, &cachetype.HealthServices{RPC: a})
 
-	a.cache.RegisterType(cachetype.PreparedQueryName, &cachetype.PreparedQuery{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Prepared queries don't support blocking
-		Refresh: false,
-	})
+	a.cache.RegisterType(cachetype.PreparedQueryName, &cachetype.PreparedQuery{RPC: a})
 
-	a.cache.RegisterType(cachetype.NodeServicesName, &cachetype.NodeServices{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.NodeServicesName, &cachetype.NodeServices{RPC: a})
 
-	a.cache.RegisterType(cachetype.ResolvedServiceConfigName, &cachetype.ResolvedServiceConfig{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.ResolvedServiceConfigName, &cachetype.ResolvedServiceConfig{RPC: a})
 
-	a.cache.RegisterType(cachetype.CatalogListServicesName, &cachetype.CatalogListServices{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.CatalogListServicesName, &cachetype.CatalogListServices{RPC: a})
 
-	a.cache.RegisterType(cachetype.CatalogServiceListName, &cachetype.CatalogServiceList{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.CatalogServiceListName, &cachetype.CatalogServiceList{RPC: a})
 
-	a.cache.RegisterType(cachetype.CatalogDatacentersName, &cachetype.CatalogDatacenters{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		Refresh: false,
-	})
+	a.cache.RegisterType(cachetype.CatalogDatacentersName, &cachetype.CatalogDatacenters{RPC: a})
 
-	a.cache.RegisterType(cachetype.InternalServiceDumpName, &cachetype.InternalServiceDump{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.InternalServiceDumpName, &cachetype.InternalServiceDump{RPC: a})
 
-	a.cache.RegisterType(cachetype.CompiledDiscoveryChainName, &cachetype.CompiledDiscoveryChain{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.CompiledDiscoveryChainName, &cachetype.CompiledDiscoveryChain{RPC: a})
 
-	a.cache.RegisterType(cachetype.ConfigEntriesName, &cachetype.ConfigEntries{
-		RPC: a,
-	}, &cache.RegisterOptions{
-		// Maintain a blocking query, retry dropped connections quickly
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.GatewayServicesName, &cachetype.GatewayServices{RPC: a})
 
-	a.cache.RegisterType(cachetype.ServiceHTTPChecksName, &cachetype.ServiceHTTPChecks{
-		Agent: a,
-	}, &cache.RegisterOptions{
-		Refresh:        true,
-		RefreshTimer:   0 * time.Second,
-		RefreshTimeout: 10 * time.Minute,
-	})
+	a.cache.RegisterType(cachetype.ConfigEntriesName, &cachetype.ConfigEntries{RPC: a})
+
+	a.cache.RegisterType(cachetype.ServiceHTTPChecksName, &cachetype.ServiceHTTPChecks{Agent: a})
+
+	a.cache.RegisterType(cachetype.FederationStateListMeshGatewaysName,
+		&cachetype.FederationStateListMeshGateways{RPC: a})
 }
 
+// LocalState returns the agent's local state
 func (a *Agent) LocalState() *local.State {
 	return a.State
 }

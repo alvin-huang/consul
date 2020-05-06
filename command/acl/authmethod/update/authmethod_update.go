@@ -1,10 +1,12 @@
 package authmethodupdate
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/command/acl/authmethod"
@@ -27,7 +29,10 @@ type cmd struct {
 
 	name string
 
+	displayName string
 	description string
+	maxTokenTTL time.Duration
+	config      string
 
 	k8sHost              string
 	k8sCACert            string
@@ -59,10 +64,33 @@ func (c *cmd) init() {
 	)
 
 	c.flags.StringVar(
+		&c.displayName,
+		"display-name",
+		"",
+		"An optional name to use instead of the name when displaying this auth method in a UI.",
+	)
+
+	c.flags.StringVar(
 		&c.description,
 		"description",
 		"",
 		"A description of the auth method.",
+	)
+
+	c.flags.DurationVar(
+		&c.maxTokenTTL,
+		"max-token-ttl",
+		0,
+		"Duration of time all tokens created by this auth method should be valid for",
+	)
+
+	c.flags.StringVar(
+		&c.config,
+		"config",
+		"",
+		"The configuration for the auth method. Must be JSON. The config is updated as one field"+
+			"May be prefixed with '@' to indicate that the value is a file path to load the config from. "+
+			"'-' may also be given to indicate that the config are available on stdin. ",
 	)
 
 	c.flags.StringVar(
@@ -92,6 +120,7 @@ func (c *cmd) init() {
 	c.flags.BoolVar(&c.noMerge, "no-merge", false, "Do not merge the current auth method "+
 		"information with what is provided to the command. Instead overwrite all fields "+
 		"with the exception of the name which is immutable.")
+
 	c.flags.StringVar(
 		&c.format,
 		"format",
@@ -147,7 +176,27 @@ func (c *cmd) Run(args []string) int {
 		method = &api.ACLAuthMethod{
 			Name:        currentAuthMethod.Name,
 			Type:        currentAuthMethod.Type,
+			DisplayName: c.displayName,
 			Description: c.description,
+		}
+		if c.maxTokenTTL > 0 {
+			method.MaxTokenTTL = c.maxTokenTTL
+		}
+
+		if c.config != "" {
+			if c.k8sHost != "" || c.k8sCACert != "" || c.k8sServiceAccountJWT != "" {
+				c.UI.Error(fmt.Sprintf("Cannot use command line arguments with '-config' flag"))
+				return 1
+			}
+			data, err := helpers.LoadDataSource(c.config, c.testStdin)
+			if err != nil {
+				c.UI.Error(fmt.Sprintf("Error loading configuration file: %v", err))
+				return 1
+			}
+			if err := json.Unmarshal([]byte(data), &method.Config); err != nil {
+				c.UI.Error(fmt.Sprintf("Error parsing JSON for auth method config: %v", err))
+				return 1
+			}
 		}
 
 		if currentAuthMethod.Type == "kubernetes" {
@@ -171,9 +220,29 @@ func (c *cmd) Run(args []string) int {
 	} else {
 		methodCopy := *currentAuthMethod
 		method = &methodCopy
-
 		if c.description != "" {
 			method.Description = c.description
+		}
+		if c.displayName != "" {
+			method.DisplayName = c.displayName
+		}
+		if c.maxTokenTTL > 0 {
+			method.MaxTokenTTL = c.maxTokenTTL
+		}
+		if c.config != "" {
+			if c.k8sHost != "" || c.k8sCACert != "" || c.k8sServiceAccountJWT != "" {
+				c.UI.Error(fmt.Sprintf("Cannot use command line arguments with '-config' flag"))
+				return 1
+			}
+			data, err := helpers.LoadDataSource(c.config, c.testStdin)
+			if err != nil {
+				c.UI.Error(fmt.Sprintf("Error loading configuration file: %v", err))
+				return 1
+			}
+			if err := json.Unmarshal([]byte(data), &method.Config); err != nil {
+				c.UI.Error(fmt.Sprintf("Error parsing JSON for auth method config: %v", err))
+				return 1
+			}
 		}
 		if method.Config == nil {
 			method.Config = make(map[string]interface{})

@@ -12,11 +12,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hashicorp/consul/testrpc"
-
 	"github.com/hashicorp/consul/agent/structs"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/sdk/testutil"
+	"github.com/hashicorp/consul/testrpc"
 	cleanhttp "github.com/hashicorp/go-cleanhttp"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +27,7 @@ func TestUiIndex(t *testing.T) {
 	defer os.RemoveAll(uiDir)
 
 	// Make the server
-	a := NewTestAgent(t, t.Name(), `
+	a := NewTestAgent(t, `
 		ui_dir = "`+uiDir+`"
 	`)
 	defer a.Shutdown()
@@ -51,6 +50,7 @@ func TestUiIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
+	defer resp.Body.Close()
 
 	// Verify the response
 	if resp.StatusCode != 200 {
@@ -67,7 +67,7 @@ func TestUiIndex(t *testing.T) {
 
 func TestUiNodes(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t, t.Name(), "")
+	a := NewTestAgent(t, "")
 	defer a.Shutdown()
 	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
@@ -105,7 +105,7 @@ func TestUiNodes(t *testing.T) {
 
 func TestUiNodes_Filter(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t, t.Name(), "")
+	a := NewTestAgent(t, "")
 	defer a.Shutdown()
 	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
@@ -147,7 +147,7 @@ func TestUiNodes_Filter(t *testing.T) {
 
 func TestUiNodeInfo(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t, t.Name(), "")
+	a := NewTestAgent(t, "")
 	defer a.Shutdown()
 	testrpc.WaitForLeader(t, a.RPC, "dc1")
 
@@ -197,7 +197,7 @@ func TestUiNodeInfo(t *testing.T) {
 
 func TestUiServices(t *testing.T) {
 	t.Parallel()
-	a := NewTestAgent(t, t.Name(), "")
+	a := NewTestAgent(t, "")
 	defer a.Shutdown()
 	testrpc.WaitForTestAgent(t, a.RPC, "dc1")
 
@@ -314,6 +314,7 @@ func TestUiServices(t *testing.T) {
 		// internal accounting that users don't see can be blown away
 		for _, sum := range summary {
 			sum.externalSourceSet = nil
+			sum.proxyForSet = nil
 		}
 
 		expected := []*ServiceSummary{
@@ -322,6 +323,7 @@ func TestUiServices(t *testing.T) {
 				Name:           "api",
 				Tags:           []string{"tag1", "tag2"},
 				Nodes:          []string{"foo"},
+				InstanceCount:  1,
 				ChecksPassing:  2,
 				ChecksWarning:  1,
 				ChecksCritical: 0,
@@ -332,6 +334,7 @@ func TestUiServices(t *testing.T) {
 				Name:           "cache",
 				Tags:           nil,
 				Nodes:          []string{"zip"},
+				InstanceCount:  1,
 				ChecksPassing:  0,
 				ChecksWarning:  0,
 				ChecksCritical: 0,
@@ -342,6 +345,8 @@ func TestUiServices(t *testing.T) {
 				Name:            "web",
 				Tags:            nil,
 				Nodes:           []string{"bar", "foo"},
+				InstanceCount:   2,
+				ProxyFor:        []string{"api"},
 				ChecksPassing:   2,
 				ChecksWarning:   1,
 				ChecksCritical:  1,
@@ -353,6 +358,7 @@ func TestUiServices(t *testing.T) {
 				Name:           "consul",
 				Tags:           nil,
 				Nodes:          []string{a.Config.NodeName},
+				InstanceCount:  1,
 				ChecksPassing:  1,
 				ChecksWarning:  0,
 				ChecksCritical: 0,
@@ -377,6 +383,7 @@ func TestUiServices(t *testing.T) {
 		// internal accounting that users don't see can be blown away
 		for _, sum := range summary {
 			sum.externalSourceSet = nil
+			sum.proxyForSet = nil
 		}
 
 		expected := []*ServiceSummary{
@@ -385,6 +392,7 @@ func TestUiServices(t *testing.T) {
 				Name:           "api",
 				Tags:           []string{"tag1", "tag2"},
 				Nodes:          []string{"foo"},
+				InstanceCount:  1,
 				ChecksPassing:  2,
 				ChecksWarning:  1,
 				ChecksCritical: 0,
@@ -395,6 +403,8 @@ func TestUiServices(t *testing.T) {
 				Name:            "web",
 				Tags:            nil,
 				Nodes:           []string{"bar", "foo"},
+				InstanceCount:   2,
+				ProxyFor:        []string{"api"},
 				ChecksPassing:   2,
 				ChecksWarning:   1,
 				ChecksCritical:  1,

@@ -623,6 +623,29 @@ func TestConfigFlagsAndEdgecases(t *testing.T) {
 			},
 		},
 		{
+			desc: "-primary-gateway",
+			args: []string{
+				`-server`,
+				`-datacenter=dc2`,
+				`-primary-gateway=a`,
+				`-primary-gateway=b`,
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{ "primary_datacenter": "dc1" }`},
+			hcl:  []string{`primary_datacenter = "dc1"`},
+			patch: func(rt *RuntimeConfig) {
+				rt.Datacenter = "dc2"
+				rt.PrimaryDatacenter = "dc1"
+				rt.ACLDatacenter = "dc1"
+				rt.PrimaryGateways = []string{"a", "b"}
+				rt.DataDir = dataDir
+				// server things
+				rt.ServerMode = true
+				rt.LeaveOnTerm = false
+				rt.SkipLeaveOnInt = true
+			},
+		},
+		{
 			desc: "-protocol",
 			args: []string{
 				`-protocol=1`,
@@ -1835,7 +1858,7 @@ func TestConfigFlagsAndEdgecases(t *testing.T) {
 			hcl:  []string{`ui = true ui_dir = "a"`},
 			err: "Both the ui and ui-dir flags were specified, please provide only one.\n" +
 				"If trying to use your own web UI resources, use the ui-dir flag.\n" +
-				"If using Consul version 0.7.0 or later, the web UI is included in the binary so use ui to enable it",
+				"The web UI is included in the binary so use ui to enable it",
 		},
 
 		// test ANY address failures
@@ -2661,82 +2684,139 @@ func TestConfigFlagsAndEdgecases(t *testing.T) {
 			},
 		},
 		{
-			desc: "auto_encrypt.allow works implies connect",
+			desc: "auto_encrypt.allow_tls works implies connect",
 			args: []string{
 				`-data-dir=` + dataDir,
 			},
 			json: []string{`{
 			  "verify_incoming": true,
-			  "auto_encrypt": { "allow_tls": true }
+			  "auto_encrypt": { "allow_tls": true },
+			  "server": true
 			}`},
 			hcl: []string{`
 			  verify_incoming = true
 			  auto_encrypt { allow_tls = true }
+			  server = true
 			`},
 			patch: func(rt *RuntimeConfig) {
 				rt.DataDir = dataDir
 				rt.VerifyIncoming = true
 				rt.AutoEncryptAllowTLS = true
 				rt.ConnectEnabled = true
+
+				// server things
+				rt.ServerMode = true
+				rt.LeaveOnTerm = false
+				rt.SkipLeaveOnInt = true
 			},
 		},
 		{
-			desc: "auto_encrypt.allow works with verify_incoming",
+			desc: "auto_encrypt.allow_tls works with verify_incoming",
 			args: []string{
 				`-data-dir=` + dataDir,
 			},
 			json: []string{`{
 			  "verify_incoming": true,
-			  "auto_encrypt": { "allow_tls": true }
+			  "auto_encrypt": { "allow_tls": true },
+			  "server": true
 			}`},
 			hcl: []string{`
 			  verify_incoming = true
 			  auto_encrypt { allow_tls = true }
+			  server = true
 			`},
 			patch: func(rt *RuntimeConfig) {
 				rt.DataDir = dataDir
 				rt.VerifyIncoming = true
 				rt.AutoEncryptAllowTLS = true
 				rt.ConnectEnabled = true
+
+				// server things
+				rt.ServerMode = true
+				rt.LeaveOnTerm = false
+				rt.SkipLeaveOnInt = true
 			},
 		},
 		{
-			desc: "auto_encrypt.allow works with verify_incoming_rpc",
+			desc: "auto_encrypt.allow_tls works with verify_incoming_rpc",
 			args: []string{
 				`-data-dir=` + dataDir,
 			},
 			json: []string{`{
 			  "verify_incoming_rpc": true,
-			  "auto_encrypt": { "allow_tls": true }
+			  "auto_encrypt": { "allow_tls": true },
+			  "server": true
 			}`},
 			hcl: []string{`
 			  verify_incoming_rpc = true
 			  auto_encrypt { allow_tls = true }
+			  server = true
 			`},
 			patch: func(rt *RuntimeConfig) {
 				rt.DataDir = dataDir
 				rt.VerifyIncomingRPC = true
 				rt.AutoEncryptAllowTLS = true
 				rt.ConnectEnabled = true
+
+				// server things
+				rt.ServerMode = true
+				rt.LeaveOnTerm = false
+				rt.SkipLeaveOnInt = true
 			},
 		},
 		{
-			desc: "auto_encrypt.allow warns without verify_incoming or verify_incoming_rpc",
+			desc: "auto_encrypt.allow_tls warns without verify_incoming or verify_incoming_rpc",
 			args: []string{
 				`-data-dir=` + dataDir,
 			},
 			json: []string{`{
-			  "auto_encrypt": { "allow_tls": true }
+			  "auto_encrypt": { "allow_tls": true },
+			  "server": true
 			}`},
 			hcl: []string{`
 			  auto_encrypt { allow_tls = true }
+			  server = true
 			`},
 			warns: []string{"if auto_encrypt.allow_tls is turned on, either verify_incoming or verify_incoming_rpc should be enabled. It is necessary to turn it off during a migration to TLS, but it should definitely be turned on afterwards."},
 			patch: func(rt *RuntimeConfig) {
 				rt.DataDir = dataDir
 				rt.AutoEncryptAllowTLS = true
 				rt.ConnectEnabled = true
+				// server things
+				rt.ServerMode = true
+				rt.LeaveOnTerm = false
+				rt.SkipLeaveOnInt = true
 			},
+		},
+		{
+			desc: "auto_encrypt.allow_tls errors in client mode",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "auto_encrypt": { "allow_tls": true },
+			  "server": false
+			}`},
+			hcl: []string{`
+			  auto_encrypt { allow_tls = true }
+			  server = false
+			`},
+			err: "auto_encrypt.allow_tls can only be used on a server.",
+		},
+		{
+			desc: "auto_encrypt.tls errors in server mode",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "auto_encrypt": { "tls": true },
+			  "server": true
+			}`},
+			hcl: []string{`
+			  auto_encrypt { tls = true }
+			  server = true
+			`},
+			err: "auto_encrypt.tls can only be used on a client.",
 		},
 		{
 			desc: "test connect vault provider configuration",
@@ -2878,6 +2958,194 @@ func TestConfigFlagsAndEdgecases(t *testing.T) {
 				}
 			`},
 			err: "AWS PCA only supports P256 EC curve",
+		},
+		{
+			desc: "connect.enable_mesh_gateway_wan_federation requires connect.enabled",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "connect": {
+				"enabled": false,
+				"enable_mesh_gateway_wan_federation": true
+			  }
+			}`},
+			hcl: []string{`
+			  connect {
+			    enabled = false
+			    enable_mesh_gateway_wan_federation = true
+			  }
+			`},
+			err: "'connect.enable_mesh_gateway_wan_federation=true' requires 'connect.enabled=true'",
+		},
+		{
+			desc: "connect.enable_mesh_gateway_wan_federation cannot use -join-wan",
+			args: []string{
+				`-data-dir=` + dataDir,
+				`-join-wan=1.2.3.4`,
+			},
+			json: []string{`{
+			  "server": true,
+			  "primary_datacenter": "one",
+			  "datacenter": "one",
+			  "connect": {
+				"enabled": true,
+				"enable_mesh_gateway_wan_federation": true
+			  }
+			}`},
+			hcl: []string{`
+			  server = true
+			  primary_datacenter = "one"
+			  datacenter = "one"
+			  connect {
+			    enabled = true
+			    enable_mesh_gateway_wan_federation = true
+			  }
+			`},
+			err: "'start_join_wan' is incompatible with 'connect.enable_mesh_gateway_wan_federation = true'",
+		},
+		{
+			desc: "connect.enable_mesh_gateway_wan_federation cannot use -retry-join-wan",
+			args: []string{
+				`-data-dir=` + dataDir,
+				`-retry-join-wan=1.2.3.4`,
+			},
+			json: []string{`{
+			  "server": true,
+			  "primary_datacenter": "one",
+			  "datacenter": "one",
+			  "connect": {
+				"enabled": true,
+				"enable_mesh_gateway_wan_federation": true
+			  }
+			}`},
+			hcl: []string{`
+			  server = true
+			  primary_datacenter = "one"
+			  datacenter = "one"
+			  connect {
+			    enabled = true
+			    enable_mesh_gateway_wan_federation = true
+			  }
+			`},
+			err: "'retry_join_wan' is incompatible with 'connect.enable_mesh_gateway_wan_federation = true'",
+		},
+		{
+			desc: "connect.enable_mesh_gateway_wan_federation requires server mode",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "server": false,
+			  "connect": {
+				"enabled": true,
+				"enable_mesh_gateway_wan_federation": true
+			  }
+			}`},
+			hcl: []string{`
+			  server = false
+			  connect {
+			    enabled = true
+			    enable_mesh_gateway_wan_federation = true
+			  }
+			`},
+			err: "'connect.enable_mesh_gateway_wan_federation = true' requires 'server = true'",
+		},
+		{
+			desc: "connect.enable_mesh_gateway_wan_federation requires no slashes in node names",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "server": true,
+			  "node_name": "really/why",
+			  "connect": {
+				"enabled": true,
+				"enable_mesh_gateway_wan_federation": true
+			  }
+			}`},
+			hcl: []string{`
+			  server = true
+			  node_name = "really/why"
+			  connect {
+			    enabled = true
+			    enable_mesh_gateway_wan_federation = true
+			  }
+			`},
+			err: "'connect.enable_mesh_gateway_wan_federation = true' requires that 'node_name' not contain '/' characters",
+		},
+		{
+			desc: "primary_gateways requires server mode",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "server": false,
+			  "primary_gateways": [ "foo.local", "bar.local" ]
+			}`},
+			hcl: []string{`
+			  server = false
+			  primary_gateways = [ "foo.local", "bar.local" ]
+			`},
+			err: "'primary_gateways' requires 'server = true'",
+		},
+		{
+			desc: "primary_gateways only works in a secondary datacenter",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "server": true,
+			  "primary_datacenter": "one",
+			  "datacenter": "one",
+			  "primary_gateways": [ "foo.local", "bar.local" ]
+			}`},
+			hcl: []string{`
+			  server = true
+			  primary_datacenter = "one"
+			  datacenter = "one"
+			  primary_gateways = [ "foo.local", "bar.local" ]
+			`},
+			err: "'primary_gateways' should only be configured in a secondary datacenter",
+		},
+		{
+			desc: "connect.enable_mesh_gateway_wan_federation in secondary with primary_gateways configured",
+			args: []string{
+				`-data-dir=` + dataDir,
+			},
+			json: []string{`{
+			  "server": true,
+			  "primary_datacenter": "one",
+			  "datacenter": "two",
+			  "primary_gateways": [ "foo.local", "bar.local" ],
+			  "connect": {
+				"enabled": true,
+				"enable_mesh_gateway_wan_federation": true
+			  }
+			}`},
+			hcl: []string{`
+			  server = true
+			  primary_datacenter = "one"
+			  datacenter = "two"
+			  primary_gateways = [ "foo.local", "bar.local" ]
+			  connect {
+			    enabled = true
+			    enable_mesh_gateway_wan_federation = true
+			  }
+			`},
+			patch: func(rt *RuntimeConfig) {
+				rt.DataDir = dataDir
+				rt.Datacenter = "two"
+				rt.PrimaryDatacenter = "one"
+				rt.ACLDatacenter = "one"
+				rt.PrimaryGateways = []string{"foo.local", "bar.local"}
+				rt.ConnectEnabled = true
+				rt.ConnectMeshGatewayWANFederationEnabled = true
+				// server things
+				rt.ServerMode = true
+				rt.LeaveOnTerm = false
+				rt.SkipLeaveOnInt = true
+			},
 		},
 
 		// ------------------------------------------------------------
@@ -3783,7 +4051,7 @@ func TestFullConfig(t *testing.T) {
 				]
                         },
 			"auto_encrypt": {
-				"tls": true,
+				"tls": false,
 				"dns_san": ["a.com", "b.com"],
 				"ip_san": ["192.168.4.139", "192.168.4.140"],
 				"allow_tls": true
@@ -3797,6 +4065,7 @@ func TestFullConfig(t *testing.T) {
 					"csr_max_per_second": 100,
 					"csr_max_concurrent": 2
 				},
+				"enable_mesh_gateway_wan_federation": false,
 				"enabled": true
 			},
 			"gossip_lan" : {
@@ -3867,7 +4136,7 @@ func TestFullConfig(t *testing.T) {
 			"key_file": "IEkkwgIA",
 			"leave_on_terminate": true,
 			"limits": {
-				"http_max_conns_per_client": 9283,
+				"http_max_conns_per_client": 100,
 				"https_handshake_timeout": "2391ms",
 				"rpc_handshake_timeout": "1932ms",
 				"rpc_rate": 12029.43,
@@ -3905,6 +4174,8 @@ func TestFullConfig(t *testing.T) {
 			},
 			"protocol": 30793,
 			"primary_datacenter": "ejtmd43d",
+			"primary_gateways": [ "aej8eeZo", "roh2KahS" ],
+			"primary_gateways_interval": "18866s",
 			"raft_protocol": 19016,
 			"raft_snapshot_threshold": 16384,
 			"raft_snapshot_interval": "30s",
@@ -4225,7 +4496,7 @@ func TestFullConfig(t *testing.T) {
 				"statsd_address": "drce87cy",
 				"statsite_address": "HpFwKB8R"
 			},
-			"tls_cipher_suites": "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+			"tls_cipher_suites": "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
 			"tls_min_version": "pAOWafkR",
 			"tls_prefer_server_cipher_suites": true,
 			"translate_wan_addrs": true,
@@ -4412,7 +4683,7 @@ func TestFullConfig(t *testing.T) {
 				}
 			}
 			auto_encrypt = {
-				tls = true
+				tls = false
 				dns_san = ["a.com", "b.com"]
 				ip_san = ["192.168.4.139", "192.168.4.140"]
 				allow_tls = true
@@ -4428,6 +4699,7 @@ func TestFullConfig(t *testing.T) {
 					csr_max_per_second = 100.0
 					csr_max_concurrent = 2.0
 				}
+				enable_mesh_gateway_wan_federation = false
 				enabled = true
 			}
 			gossip_lan {
@@ -4498,7 +4770,7 @@ func TestFullConfig(t *testing.T) {
 			key_file = "IEkkwgIA"
 			leave_on_terminate = true
 			limits {
-				http_max_conns_per_client = 9283
+				http_max_conns_per_client = 100
 				https_handshake_timeout = "2391ms"
 				rpc_handshake_timeout = "1932ms"
 				rpc_rate = 12029.43
@@ -4538,6 +4810,8 @@ func TestFullConfig(t *testing.T) {
 			}
 			protocol = 30793
 			primary_datacenter = "ejtmd43d"
+			primary_gateways = [ "aej8eeZo", "roh2KahS" ]
+			primary_gateways_interval = "18866s"
 			raft_protocol = 19016
 			raft_snapshot_threshold = 16384
 			raft_snapshot_interval = "30s"
@@ -4857,7 +5131,7 @@ func TestFullConfig(t *testing.T) {
 				statsd_address = "drce87cy"
 				statsite_address = "HpFwKB8R"
 			}
-			tls_cipher_suites = "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+			tls_cipher_suites = "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256"
 			tls_min_version = "pAOWafkR"
 			tls_prefer_server_cipher_suites = true
 			translate_wan_addrs = true
@@ -5135,7 +5409,7 @@ func TestFullConfig(t *testing.T) {
 				},
 			},
 		},
-		AutoEncryptTLS:        true,
+		AutoEncryptTLS:        false,
 		AutoEncryptDNSSAN:     []string{"a.com", "b.com"},
 		AutoEncryptIPSAN:      []net.IP{net.ParseIP("192.168.4.139"), net.ParseIP("192.168.4.140")},
 		AutoEncryptAllowTLS:   true,
@@ -5152,94 +5426,97 @@ func TestFullConfig(t *testing.T) {
 			"CSRMaxPerSecond":     float64(100),
 			"CSRMaxConcurrent":    float64(2),
 		},
-		DNSAddrs:                         []net.Addr{tcpAddr("93.95.95.81:7001"), udpAddr("93.95.95.81:7001")},
-		DNSARecordLimit:                  29907,
-		DNSAllowStale:                    true,
-		DNSDisableCompression:            true,
-		DNSDomain:                        "7W1xXSqd",
-		DNSAltDomain:                     "1789hsd",
-		DNSEnableTruncate:                true,
-		DNSMaxStale:                      29685 * time.Second,
-		DNSNodeTTL:                       7084 * time.Second,
-		DNSOnlyPassing:                   true,
-		DNSPort:                          7001,
-		DNSRecursorTimeout:               4427 * time.Second,
-		DNSRecursors:                     []string{"63.38.39.58", "92.49.18.18"},
-		DNSSOA:                           RuntimeSOAConfig{Refresh: 3600, Retry: 600, Expire: 86400, Minttl: 0},
-		DNSServiceTTL:                    map[string]time.Duration{"*": 32030 * time.Second},
-		DNSUDPAnswerLimit:                29909,
-		DNSNodeMetaTXT:                   true,
-		DNSUseCache:                      true,
-		DNSCacheMaxAge:                   5 * time.Minute,
-		DataDir:                          dataDir,
-		Datacenter:                       "rzo029wg",
-		DefaultQueryTime:                 16743 * time.Second,
-		DevMode:                          true,
-		DisableAnonymousSignature:        true,
-		DisableCoordinates:               true,
-		DisableHostNodeID:                true,
-		DisableHTTPUnprintableCharFilter: true,
-		DisableKeyringFile:               true,
-		DisableRemoteExec:                true,
-		DisableUpdateCheck:               true,
-		DiscardCheckOutput:               true,
-		DiscoveryMaxStale:                5 * time.Second,
-		EnableAgentTLSForChecks:          true,
-		EnableCentralServiceConfig:       true,
-		EnableDebug:                      true,
-		EnableRemoteScriptChecks:         true,
-		EnableLocalScriptChecks:          true,
-		EnableSyslog:                     true,
-		EnableUI:                         true,
-		EncryptKey:                       "A4wELWqH",
-		EncryptVerifyIncoming:            true,
-		EncryptVerifyOutgoing:            true,
-		GRPCPort:                         4881,
-		GRPCAddrs:                        []net.Addr{tcpAddr("32.31.61.91:4881")},
-		HTTPAddrs:                        []net.Addr{tcpAddr("83.39.91.39:7999")},
-		HTTPBlockEndpoints:               []string{"RBvAFcGD", "fWOWFznh"},
-		AllowWriteHTTPFrom:               []*net.IPNet{cidr("127.0.0.0/8"), cidr("22.33.44.55/32"), cidr("0.0.0.0/0")},
-		HTTPPort:                         7999,
-		HTTPResponseHeaders:              map[string]string{"M6TKa9NP": "xjuxjOzQ", "JRCrHZed": "rl0mTx81"},
-		HTTPSAddrs:                       []net.Addr{tcpAddr("95.17.17.19:15127")},
-		HTTPMaxConnsPerClient:            9283,
-		HTTPSHandshakeTimeout:            2391 * time.Millisecond,
-		HTTPSPort:                        15127,
-		KeyFile:                          "IEkkwgIA",
-		KVMaxValueSize:                   1234567800000000,
-		LeaveDrainTime:                   8265 * time.Second,
-		LeaveOnTerm:                      true,
-		LogLevel:                         "k1zo9Spt",
-		LogJSON:                          true,
-		MaxQueryTime:                     18237 * time.Second,
-		NodeID:                           types.NodeID("AsUIlw99"),
-		NodeMeta:                         map[string]string{"5mgGQMBk": "mJLtVMSG", "A7ynFMJB": "0Nx6RGab"},
-		NodeName:                         "otlLxGaI",
-		NonVotingServer:                  true,
-		PidFile:                          "43xN80Km",
-		PrimaryDatacenter:                "ejtmd43d",
-		RPCAdvertiseAddr:                 tcpAddr("17.99.29.16:3757"),
-		RPCBindAddr:                      tcpAddr("16.99.34.17:3757"),
-		RPCHandshakeTimeout:              1932 * time.Millisecond,
-		RPCHoldTimeout:                   15707 * time.Second,
-		RPCProtocol:                      30793,
-		RPCRateLimit:                     12029.43,
-		RPCMaxBurst:                      44848,
-		RPCMaxConnsPerClient:             2954,
-		RaftProtocol:                     19016,
-		RaftSnapshotThreshold:            16384,
-		RaftSnapshotInterval:             30 * time.Second,
-		RaftTrailingLogs:                 83749,
-		ReconnectTimeoutLAN:              23739 * time.Second,
-		ReconnectTimeoutWAN:              26694 * time.Second,
-		RejoinAfterLeave:                 true,
-		RetryJoinIntervalLAN:             8067 * time.Second,
-		RetryJoinIntervalWAN:             28866 * time.Second,
-		RetryJoinLAN:                     []string{"pbsSFY7U", "l0qLtWij"},
-		RetryJoinMaxAttemptsLAN:          913,
-		RetryJoinMaxAttemptsWAN:          23160,
-		RetryJoinWAN:                     []string{"PFsR02Ye", "rJdQIhER"},
-		SegmentName:                      "BC2NhTDi",
+		ConnectMeshGatewayWANFederationEnabled: false,
+		DNSAddrs:                               []net.Addr{tcpAddr("93.95.95.81:7001"), udpAddr("93.95.95.81:7001")},
+		DNSARecordLimit:                        29907,
+		DNSAllowStale:                          true,
+		DNSDisableCompression:                  true,
+		DNSDomain:                              "7W1xXSqd",
+		DNSAltDomain:                           "1789hsd",
+		DNSEnableTruncate:                      true,
+		DNSMaxStale:                            29685 * time.Second,
+		DNSNodeTTL:                             7084 * time.Second,
+		DNSOnlyPassing:                         true,
+		DNSPort:                                7001,
+		DNSRecursorTimeout:                     4427 * time.Second,
+		DNSRecursors:                           []string{"63.38.39.58", "92.49.18.18"},
+		DNSSOA:                                 RuntimeSOAConfig{Refresh: 3600, Retry: 600, Expire: 86400, Minttl: 0},
+		DNSServiceTTL:                          map[string]time.Duration{"*": 32030 * time.Second},
+		DNSUDPAnswerLimit:                      29909,
+		DNSNodeMetaTXT:                         true,
+		DNSUseCache:                            true,
+		DNSCacheMaxAge:                         5 * time.Minute,
+		DataDir:                                dataDir,
+		Datacenter:                             "rzo029wg",
+		DefaultQueryTime:                       16743 * time.Second,
+		DevMode:                                true,
+		DisableAnonymousSignature:              true,
+		DisableCoordinates:                     true,
+		DisableHostNodeID:                      true,
+		DisableHTTPUnprintableCharFilter:       true,
+		DisableKeyringFile:                     true,
+		DisableRemoteExec:                      true,
+		DisableUpdateCheck:                     true,
+		DiscardCheckOutput:                     true,
+		DiscoveryMaxStale:                      5 * time.Second,
+		EnableAgentTLSForChecks:                true,
+		EnableCentralServiceConfig:             true,
+		EnableDebug:                            true,
+		EnableRemoteScriptChecks:               true,
+		EnableLocalScriptChecks:                true,
+		EnableSyslog:                           true,
+		EnableUI:                               true,
+		EncryptKey:                             "A4wELWqH",
+		EncryptVerifyIncoming:                  true,
+		EncryptVerifyOutgoing:                  true,
+		GRPCPort:                               4881,
+		GRPCAddrs:                              []net.Addr{tcpAddr("32.31.61.91:4881")},
+		HTTPAddrs:                              []net.Addr{tcpAddr("83.39.91.39:7999")},
+		HTTPBlockEndpoints:                     []string{"RBvAFcGD", "fWOWFznh"},
+		AllowWriteHTTPFrom:                     []*net.IPNet{cidr("127.0.0.0/8"), cidr("22.33.44.55/32"), cidr("0.0.0.0/0")},
+		HTTPPort:                               7999,
+		HTTPResponseHeaders:                    map[string]string{"M6TKa9NP": "xjuxjOzQ", "JRCrHZed": "rl0mTx81"},
+		HTTPSAddrs:                             []net.Addr{tcpAddr("95.17.17.19:15127")},
+		HTTPMaxConnsPerClient:                  100,
+		HTTPSHandshakeTimeout:                  2391 * time.Millisecond,
+		HTTPSPort:                              15127,
+		KeyFile:                                "IEkkwgIA",
+		KVMaxValueSize:                         1234567800000000,
+		LeaveDrainTime:                         8265 * time.Second,
+		LeaveOnTerm:                            true,
+		LogLevel:                               "k1zo9Spt",
+		LogJSON:                                true,
+		MaxQueryTime:                           18237 * time.Second,
+		NodeID:                                 types.NodeID("AsUIlw99"),
+		NodeMeta:                               map[string]string{"5mgGQMBk": "mJLtVMSG", "A7ynFMJB": "0Nx6RGab"},
+		NodeName:                               "otlLxGaI",
+		NonVotingServer:                        true,
+		PidFile:                                "43xN80Km",
+		PrimaryDatacenter:                      "ejtmd43d",
+		PrimaryGateways:                        []string{"aej8eeZo", "roh2KahS"},
+		PrimaryGatewaysInterval:                18866 * time.Second,
+		RPCAdvertiseAddr:                       tcpAddr("17.99.29.16:3757"),
+		RPCBindAddr:                            tcpAddr("16.99.34.17:3757"),
+		RPCHandshakeTimeout:                    1932 * time.Millisecond,
+		RPCHoldTimeout:                         15707 * time.Second,
+		RPCProtocol:                            30793,
+		RPCRateLimit:                           12029.43,
+		RPCMaxBurst:                            44848,
+		RPCMaxConnsPerClient:                   2954,
+		RaftProtocol:                           19016,
+		RaftSnapshotThreshold:                  16384,
+		RaftSnapshotInterval:                   30 * time.Second,
+		RaftTrailingLogs:                       83749,
+		ReconnectTimeoutLAN:                    23739 * time.Second,
+		ReconnectTimeoutWAN:                    26694 * time.Second,
+		RejoinAfterLeave:                       true,
+		RetryJoinIntervalLAN:                   8067 * time.Second,
+		RetryJoinIntervalWAN:                   28866 * time.Second,
+		RetryJoinLAN:                           []string{"pbsSFY7U", "l0qLtWij"},
+		RetryJoinMaxAttemptsLAN:                913,
+		RetryJoinMaxAttemptsWAN:                23160,
+		RetryJoinWAN:                           []string{"PFsR02Ye", "rJdQIhER"},
+		SegmentName:                            "BC2NhTDi",
 		Segments: []structs.NetworkSegment{
 			{
 				Name:        "PExYMe2E",
@@ -5567,7 +5844,7 @@ func TestFullConfig(t *testing.T) {
 			StatsdAddr:                         "drce87cy",
 			StatsiteAddr:                       "HpFwKB8R",
 		},
-		TLSCipherSuites:             []uint16{tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305, tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
+		TLSCipherSuites:             []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256},
 		TLSMinVersion:               "pAOWafkR",
 		TLSPreferServerCipherSuites: true,
 		TaggedAddresses: map[string]string{
@@ -5893,6 +6170,9 @@ func TestSanitize(t *testing.T) {
 		RetryJoinWAN: []string{
 			"wan_foo=bar wan_key=baz wan_secret=boom wan_bang=bar",
 		},
+		PrimaryGateways: []string{
+			"pmgw_foo=bar pmgw_key=baz pmgw_secret=boom pmgw_bang=bar",
+		},
 		Services: []*structs.ServiceDefinition{
 			&structs.ServiceDefinition{
 				Name:  "foo",
@@ -5995,6 +6275,7 @@ func TestSanitize(t *testing.T) {
 		"ConnectCAConfig": {},
 		"ConnectCAProvider": "",
 		"ConnectEnabled": false,
+		"ConnectMeshGatewayWANFederationEnabled": false,
 		"ConnectSidecarMaxPort": 0,
 		"ConnectSidecarMinPort": 0,
 		"ConnectTestCALeafRootChangeSpread": "0s",
@@ -6101,6 +6382,10 @@ func TestSanitize(t *testing.T) {
 		"NonVotingServer": false,
 		"PidFile": "",
 		"PrimaryDatacenter": "",
+		"PrimaryGateways": [
+			"pmgw_foo=bar pmgw_key=baz pmgw_secret=boom pmgw_bang=bar"
+		],
+		"PrimaryGatewaysInterval": "0s",
 		"RPCAdvertiseAddr": "",
 		"RPCBindAddr": "",
 		"RPCHandshakeTimeout": "0s",
@@ -6461,7 +6746,7 @@ func TestRuntime_ToTLSUtilConfig(t *testing.T) {
 		ServerName:                  "f",
 		DNSDomain:                   "g",
 		TLSMinVersion:               "tls12",
-		TLSCipherSuites:             []uint16{tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305},
+		TLSCipherSuites:             []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA},
 		TLSPreferServerCipherSuites: true,
 		EnableAgentTLSForChecks:     true,
 		AutoEncryptTLS:              true,
@@ -6483,7 +6768,7 @@ func TestRuntime_ToTLSUtilConfig(t *testing.T) {
 	require.Equal(t, "f", r.ServerName)
 	require.Equal(t, "g", r.Domain)
 	require.Equal(t, "tls12", r.TLSMinVersion)
-	require.Equal(t, []uint16{tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305}, r.CipherSuites)
+	require.Equal(t, []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA}, r.CipherSuites)
 }
 
 func Test_UIPathBuilder(t *testing.T) {
