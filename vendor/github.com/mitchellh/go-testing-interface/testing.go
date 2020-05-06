@@ -22,6 +22,7 @@ type T interface {
 	Log(args ...interface{})
 	Logf(format string, args ...interface{})
 	Name() string
+	Parallel()
 	Skip(args ...interface{})
 	SkipNow()
 	Skipf(format string, args ...interface{})
