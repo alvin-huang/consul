@@ -1,5 +1,22 @@
 ## UNRELEASED
 
+## 1.8.0-beta2 (May 21, 2020)
+
+IMPROVEMENTS:
+
+* xds: Ingress gateways now respect the same binding options as mesh and terminating gateways [[GH-7924](https://github.com/hashicorp/consul/pull/7924)]
+
+BUGFIXES:
+
+* xds: Fixed bug where deleting a gateway config entry did not correctly remove xDS configuration from the envoy proxy [[GH-7898](https://github.com/hashicorp/consul/pull/7898)]
+* ui: Quote service names when filtering intentions to prevent 500 errors when accessing a service [[GH-7896](https://github.com/hashicorp/consul/issues/7896)] [[GH-7888](https://github.com/hashicorp/consul/pull/7888)]
+* ui: Miscellaneous amends for Safari and Firefox [[GH-7904](https://github.com/hashicorp/consul/issues/7904)] [[GH-7907](https://github.com/hashicorp/consul/pull/7907)]
+* ui: Ensure a value is always passed to CONSUL_SSO_ENABLED [[GH-7913](https://github.com/hashicorp/consul/pull/7913)]
+* agent: Preserve ModifyIndex for unchanged entry in KV transaciton [[GH-7832](https://github.com/hashicorp/consul/pull/7832)]
+* agent: use default resolver scheme for gRPC dialing [[GH-7617](https://github.com/hashicorp/consul/pull/7617)]
+
+## 1.8.0-beta1 (May 14, 2020)
+
 FEATURES:
 
 * agent: handle re-bootstrapping in a secondary datacenter when WAN federation via mesh gateways is configured [[GH-7931](https://github.com/hashicorp/consul/issues/7931)]
